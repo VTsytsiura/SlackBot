@@ -3,6 +3,7 @@ import { App } from "@slack/bolt";
 import { createAgentSession, sendMessageToAgent, endAgentSession } from "./agentforce";
 import { downloadSalesforceFile } from "./salesforce";
 import { startHealthCheckServer } from "./health";
+import { generateWorkingMessage } from "./openai";
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -18,8 +19,6 @@ interface ConversationState {
 
 const sessions = new Map<string, ConversationState>();
 
-// Matches a Salesforce file download link, e.g.
-// https://.../sfc/servlet.shepherd/document/download/069XXXXXXXXXXXXXXX
 const FILE_LINK_REGEX = /\/document\/download\/([a-zA-Z0-9]{15,18})/;
 
 app.message(async ({ message, say }) => {
@@ -58,11 +57,42 @@ app.message(async ({ message, say }) => {
 
   state.seq += 1;
 
+  // Post an immediate generic placeholder — guaranteed instant feedback,
+  // independent of both the agent call and the OpenAI call below.
+  const placeholder = await say("_Working on it..._");
+  const placeholderTs = (placeholder as any).ts as string | undefined;
+
+  // Once true, the OpenAI-driven placeholder update (below) must never fire —
+  // the real result has already been posted and must not be overwritten.
+  let finalized = false;
+
+  // Fire the OpenAI call in PARALLEL with the agent call — never awaited
+  // before starting the agent request. If it resolves before the agent does
+  // (and the agent hasn't finished yet), upgrade the generic placeholder to
+  // a more specific one. If it's slower than the agent, or fails/times out,
+  // this simply does nothing.
+  generateWorkingMessage(text)
+    .then(async (smartText) => {
+      if (smartText && !finalized && placeholderTs) {
+        try {
+          await app.client.chat.update({ channel: channelId, ts: placeholderTs, text: `_${smartText}_` });
+        } catch {
+          // ignore — not worth failing the whole flow over a cosmetic update
+        }
+      }
+    })
+    .catch(() => {
+      // openai.ts already swallows its own errors and returns null; this is
+      // just an extra safety net.
+    });
+
   try {
     // sendMessageToAgent now returns ALL messages the agent produced this turn
     // (e.g. an intermediate "Sure, generating the contract now..." acknowledgment
     // followed by the final result) — send each one to Slack, in order.
     const replyTexts = await sendMessageToAgent(state.sessionId, text, state.seq);
+
+    let placeholderConsumed = false;
 
     for (const replyText of replyTexts) {
       const fileMatch = replyText.match(FILE_LINK_REGEX);
@@ -74,6 +104,12 @@ app.message(async ({ message, say }) => {
           const { data, fileName } = await downloadSalesforceFile(contentDocumentId);
           const cleanedText = replyText.replace(FILE_LINK_REGEX, "").trim();
 
+          if (placeholderTs && !placeholderConsumed) {
+            finalized = true;
+            await app.client.chat.delete({ channel: channelId, ts: placeholderTs });
+            placeholderConsumed = true;
+          }
+
           await app.client.files.uploadV2({
             channel_id: channelId,
             file: data,
@@ -82,15 +118,28 @@ app.message(async ({ message, say }) => {
           });
         } catch (fileErr) {
           // Fall back to plain text (with the link as-is) if the file couldn't be attached
+          finalized = true;
           await say(replyText);
           await say(`⚠️ Could not attach the file directly: ${(fileErr as Error).message}`);
         }
+      } else if (placeholderTs && !placeholderConsumed) {
+        finalized = true;
+        await app.client.chat.update({ channel: channelId, ts: placeholderTs, text: replyText });
+        placeholderConsumed = true;
       } else {
         await say(replyText);
       }
     }
+
+    finalized = true;
   } catch (err) {
-    await say(`❌ Agent communication error: ${(err as Error).message}`);
+    finalized = true;
+    const errorText = `❌ Agent communication error: ${(err as Error).message}`;
+    if (placeholderTs) {
+      await app.client.chat.update({ channel: channelId, ts: placeholderTs, text: errorText });
+    } else {
+      await say(errorText);
+    }
   }
 });
 
