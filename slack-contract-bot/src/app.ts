@@ -19,6 +19,8 @@ interface ConversationState {
 
 const sessions = new Map<string, ConversationState>();
 
+// Matches a Salesforce file download link, e.g.
+// https://.../sfc/servlet.shepherd/document/download/069XXXXXXXXXXXXXXX
 const FILE_LINK_REGEX = /\/document\/download\/([a-zA-Z0-9]{15,18})/;
 
 app.message(async ({ message, say }) => {
