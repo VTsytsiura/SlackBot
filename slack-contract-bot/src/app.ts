@@ -4,6 +4,7 @@ import { createAgentSession, sendMessageToAgent, endAgentSession } from "./agent
 import { downloadSalesforceFile } from "./salesforce";
 import { startHealthCheckServer } from "./health";
 import { generateWorkingMessage } from "./openai";
+import { parseSlackButtons } from "./slackFormatting";
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -107,7 +108,14 @@ app.message(async ({ message, say }) => {
           await say(`⚠️ Could not attach the file directly: ${(fileErr as Error).message}`);
         }
       } else {
-        await say(replyText);
+        // Convert any [[SLACK_BTN|label|url]] placeholders in the agent's
+        // reply into real Slack Block Kit buttons before sending.
+        const parsed = parseSlackButtons(replyText);
+        if (parsed.blocks) {
+          await say({ text: parsed.text, blocks: parsed.blocks });
+        } else {
+          await say(parsed.text);
+        }
       }
     }
   } catch (err) {
