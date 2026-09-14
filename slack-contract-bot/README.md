@@ -15,8 +15,12 @@ Slack (message) → Bot (Socket Mode) → Agentforce Agent API → Apex Actions 
   state, and file-attachment handling.
 - `src/agentforce.ts` — Salesforce Agentforce Agent API client (auth,
   session lifecycle, sending messages).
-- `src/salesforce.ts` — Salesforce REST API client (opportunity updates,
-  downloading generated files via ContentVersion).
+- `src/salesforce.ts` — Salesforce REST API client for downloading generated
+  files via ContentVersion.
+- `src/slackFormatting.ts` — converts `[[SLACK_BTN|label|url]]` placeholders
+  from the agent's reply into Slack Block Kit buttons.
+- `src/openai.ts` — optional: generates a context-aware "working on it..."
+  placeholder message while the agent call is in flight.
 - `src/health.ts` — minimal HTTP server exposing `GET /health` (and `GET /`)
   so hosting platforms can healthcheck the process. The bot itself only
   communicates with Slack over Socket Mode; this server does not carry any
@@ -51,6 +55,8 @@ set the same keys under **Project → Variables**:
 - `SF_AGENT_CLIENT_SECRET`
 - `SF_AGENT_ID`
 - `SF_AGENT_LOGIN_URL`
+- `OPENAI_API_KEY` — optional; enables the smarter "working on it..." placeholder.
+- `OPENAI_MODEL` — optional; defaults to `gpt-4o-mini`.
 - `PORT` — optional; Railway sets this automatically for the health check server.
 
 ## Deployment

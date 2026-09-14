@@ -7,11 +7,6 @@ interface SfTokenResponse {
   instance_url: string;
 }
 
-interface OpportunityUpdateResponse {
-  success: boolean;
-  message: string;
-}
-
 interface SalesforceFile {
   data: Buffer;
   fileName: string;
@@ -55,30 +50,9 @@ async function getAccessToken(): Promise<{ accessToken: string; instanceUrl: str
   return { accessToken: data.access_token, instanceUrl: data.instance_url };
 }
 
-export async function updateOpportunityStage(
-  opportunityId: string,
-  newStage: string
-): Promise<OpportunityUpdateResponse> {
-  const { accessToken, instanceUrl } = await getAccessToken();
-
-  const response = await fetch(`${instanceUrl}/services/apexrest/OpportunityBot/`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ opportunityId, newStage }),
-  });
-
-  await assertOk(response, "Opportunity stage update");
-
-  return (await response.json()) as OpportunityUpdateResponse;
-}
-
 export async function downloadSalesforceFile(contentDocumentId: string): Promise<SalesforceFile> {
   const { accessToken, instanceUrl } = await getAccessToken();
 
-  // 1. Find the latest ContentVersion for this ContentDocumentId
   const soql = `SELECT Id, Title, FileExtension FROM ContentVersion WHERE ContentDocumentId = '${contentDocumentId}' AND IsLatest = true LIMIT 1`;
   const queryResponse = await fetch(
     `${instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`,
@@ -98,7 +72,6 @@ export async function downloadSalesforceFile(contentDocumentId: string): Promise
   const extension = record.FileExtension || "pdf";
   const fileName = `${record.Title}.${extension}`;
 
-  // 2. Download the binary file content
   const fileResponse = await fetch(
     `${instanceUrl}/services/data/v60.0/sobjects/ContentVersion/${versionId}/VersionData`,
     { headers: { Authorization: `Bearer ${accessToken}` } }

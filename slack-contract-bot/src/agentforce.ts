@@ -53,10 +53,6 @@ async function getAgentApiToken(): Promise<string> {
   return data.access_token;
 }
 
-/**
- * Opens a new Agentforce Agent API session for the configured agent.
- * Returns the session ID used by {@link sendMessageToAgent} and {@link endAgentSession}.
- */
 export async function createAgentSession(): Promise<string> {
   const token = await getAgentApiToken();
   const agentId = process.env.SF_AGENT_ID || "";
@@ -81,13 +77,6 @@ export async function createAgentSession(): Promise<string> {
   return data.sessionId;
 }
 
-/**
- * Sends a user message to the agent and returns ALL text messages the agent
- * produced during this turn, in order (e.g. an intermediate "Sure, generating
- * the contract now..." acknowledgment followed by the final result message).
- * Previously this only returned the first message, silently dropping any
- * others returned in the same API response.
- */
 export async function sendMessageToAgent(
   sessionId: string,
   text: string,

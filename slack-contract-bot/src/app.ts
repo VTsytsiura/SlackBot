@@ -20,8 +20,6 @@ interface ConversationState {
 
 const sessions = new Map<string, ConversationState>();
 
-// Matches a Salesforce file download link, e.g.
-// https://.../sfc/servlet.shepherd/document/download/069XXXXXXXXXXXXXXX
 const FILE_LINK_REGEX = /\/document\/download\/([a-zA-Z0-9]{15,18})/;
 
 app.message(async ({ message, say }) => {
@@ -60,31 +58,22 @@ app.message(async ({ message, say }) => {
 
   state.seq += 1;
 
-  // Post an immediate placeholder — guaranteed instant feedback. This message
-  // is only ever updated by the OpenAI call below; the final agent result is
-  // always posted as a brand-new message and never touches this one again.
   const placeholder = await say("_Working on it..._");
   const placeholderTs = (placeholder as any).ts as string | undefined;
 
-  // Fire the OpenAI call in parallel with the agent call (never awaited
-  // before starting the agent request). If/when it resolves, it upgrades the
-  // placeholder text — independent of whether the agent has already answered.
   generateWorkingMessage(text)
     .then(async (smartText) => {
       if (smartText && placeholderTs) {
         try {
           await app.client.chat.update({ channel: channelId, ts: placeholderTs, text: `_${smartText}_` });
         } catch {
-          // ignore — cosmetic update only
         }
       }
     })
     .catch(() => {
-      // openai.ts already swallows its own errors and returns null; extra safety net.
     });
 
   try {
-    // sendMessageToAgent returns ALL text messages the agent produced this turn.
     const replyTexts = await sendMessageToAgent(state.sessionId, text, state.seq);
 
     for (const replyText of replyTexts) {
@@ -108,8 +97,6 @@ app.message(async ({ message, say }) => {
           await say(`⚠️ Could not attach the file directly: ${(fileErr as Error).message}`);
         }
       } else {
-        // Convert any [[SLACK_BTN|label|url]] placeholders in the agent's
-        // reply into real Slack Block Kit buttons before sending.
         const parsed = parseSlackButtons(replyText);
         if (parsed.blocks) {
           await say({ text: parsed.text, blocks: parsed.blocks });
