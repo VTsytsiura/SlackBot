@@ -104,6 +104,7 @@ export async function sendMessageToAgent(
   await assertOk(response, "Send message");
 
   const data = (await response.json()) as AgentSendMessageResponse;
+  console.log("RAW Agent API response:", JSON.stringify(data, null, 2));
 
   const textMessages = (data.messages || [])
     .filter((m) => (m.type === "Inform" || m.type === "Text") && !!m.message)
