@@ -67,9 +67,15 @@ export async function createAgentSession(): Promise<string> {
       externalSessionKey: crypto.randomUUID(),
       instanceConfig: { endpoint: SF_LOGIN_URL },
       streamingCapabilities: { chunkTypes: ["Text"] },
-      bypassUser: true,
+      bypassUser: false,
     }),
   });
+
+  // Employee-type agents (agent_type: "AgentforceEmployeeAgent") have no
+  // dedicated Agent User to bypass to — bypassUser:true fails with
+  // "Invalid user ID provided on start session". For this agent type,
+  // bypassUser:false correctly uses the Run As User already configured
+  // on the ECA's Client Credentials Flow instead.
 
   await assertOk(response, "Session creation");
 
