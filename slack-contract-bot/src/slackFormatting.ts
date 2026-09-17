@@ -1,62 +1,71 @@
-const SLACK_BTN_REGEX = /\[\[SLACK_BTN\|([^|\]]+)\|([^|\]]+)\]\]/g;
-
-interface ButtonSpec {
-  label: string;
-  url: string;
-}
+const SLACK_BTN_PATTERN = "\\[\\[SLACK_BTN\\|([^|\\]]+)\\|([^|\\]]+)\\]\\]";
 
 export interface ParsedSlackMessage {
   text: string;
   blocks?: any[];
 }
 
-export function parseSlackButtons(rawText: string): ParsedSlackMessage {
-  const buttons: ButtonSpec[] = [];
-
-  const cleanedText = rawText
-    .replace(SLACK_BTN_REGEX, (_match, label: string, url: string) => {
-      buttons.push({ label: label.trim(), url: url.trim() });
-      return "";
-    })
-    // Collapse runs of blank/whitespace-only lines left behind by removed
-    // placeholders, but preserve genuine single line breaks between entries
-    // (e.g. "Name — Status" lines) as real newlines rather than letting them
-    // collapse into one run-on sentence.
+function normalizeWhitespace(segment: string): string {
+  return segment
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
     .join("\n")
     .trim();
+}
 
-  if (buttons.length === 0) {
+export function parseSlackButtons(rawText: string): ParsedSlackMessage {
+  // Fresh RegExp instance per call — a shared module-level global regex would
+  // carry mutable lastIndex state across concurrent/successive calls.
+  const regex = new RegExp(SLACK_BTN_PATTERN, "g");
+
+  const blocks: any[] = [];
+  const labels: string[] = [];
+  let lastIndex = 0;
+  let buttonCount = 0;
+  let match: RegExpExecArray | null;
+
+  const pushTextBlock = (segment: string) => {
+    const normalized = normalizeWhitespace(segment);
+    if (normalized) {
+      blocks.push({ type: "section", text: { type: "mrkdwn", text: normalized } });
+    }
+  };
+
+  while ((match = regex.exec(rawText)) !== null) {
+    // Text that appeared before this button — its own section block
+    pushTextBlock(rawText.slice(lastIndex, match.index));
+
+    const label = match[1].trim();
+    const url = match[2].trim();
+    labels.push(label);
+    buttonCount += 1;
+
+    blocks.push({
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          text: { type: "plain_text", text: label, emoji: true },
+          url,
+          action_id: `slack_btn_${buttonCount}`,
+        },
+      ],
+    });
+
+    lastIndex = regex.lastIndex;
+  }
+
+  // Any trailing text after the last button (e.g. "Total ... found: 5")
+  pushTextBlock(rawText.slice(lastIndex));
+
+  if (buttonCount === 0) {
     return { text: rawText };
   }
 
-  const blocks: any[] = [];
-
-  if (cleanedText) {
-    blocks.push({
-      type: "section",
-      text: { type: "mrkdwn", text: cleanedText },
-    });
-  }
-
-  // Slack allows a maximum of 5 elements per "actions" block — chunk if needed
-  for (let i = 0; i < buttons.length; i += 5) {
-    const chunk = buttons.slice(i, i + 5);
-    blocks.push({
-      type: "actions",
-      elements: chunk.map((btn, idx) => ({
-        type: "button",
-        text: { type: "plain_text", text: btn.label, emoji: true },
-        url: btn.url,
-        action_id: `slack_btn_${i + idx}`,
-      })),
-    });
-  }
-
   return {
-    text: cleanedText || buttons.map((b) => b.label).join(", "),
+    // Slack requires a non-empty top-level "text" fallback even when using blocks
+    text: labels.join(", "),
     blocks,
   };
 }
