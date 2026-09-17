@@ -18,7 +18,14 @@ export function parseSlackButtons(rawText: string): ParsedSlackMessage {
       buttons.push({ label: label.trim(), url: url.trim() });
       return "";
     })
-    .replace(/\s{2,}/g, " ")
+    // Collapse runs of blank/whitespace-only lines left behind by removed
+    // placeholders, but preserve genuine single line breaks between entries
+    // (e.g. "Name — Status" lines) as real newlines rather than letting them
+    // collapse into one run-on sentence.
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join("\n")
     .trim();
 
   if (buttons.length === 0) {
@@ -34,6 +41,7 @@ export function parseSlackButtons(rawText: string): ParsedSlackMessage {
     });
   }
 
+  // Slack allows a maximum of 5 elements per "actions" block — chunk if needed
   for (let i = 0; i < buttons.length; i += 5) {
     const chunk = buttons.slice(i, i + 5);
     blocks.push({
