@@ -1,4 +1,7 @@
-const SLACK_BTN_PATTERN = "\\[\\[SLACK_BTN\\|([^|\\]]+)\\|([^|\\]]+)\\]\\]";
+const SLACK_BTN_PATTERN = "\\[\\[SLACK_BTN\\|([^|\\]]+)\\|(.+?)\\]\\]";
+const SLACK_NATIVE_LINK_PATTERN = /^<([^|>]+)\|[^>]*>$/;
+const MARKDOWN_LINK_PATTERN = /^\[[^\]]*\]\((https?:\/\/[^)]+)\)$/;
+const VALID_HTTP_URL_PATTERN = /^https?:\/\/\S+$/i;
 
 export interface ParsedSlackMessage {
   text: string;
@@ -14,10 +17,35 @@ function normalizeWhitespace(segment: string): string {
     .trim();
 }
 
+/**
+ * Extracts the real URL from whatever wrapping the model used. Returns null
+ * if nothing resembling a valid http(s) URL can be found — callers must
+ * treat that as "no usable link", never fall back to inventing one.
+ */
+function extractValidUrl(rawCapture: string): string | null {
+  const trimmed = rawCapture.trim();
+
+  const markdownLinkMatch = trimmed.match(MARKDOWN_LINK_PATTERN);
+  if (markdownLinkMatch) {
+    return markdownLinkMatch[1];
+  }
+
+  const nativeLinkMatch = trimmed.match(SLACK_NATIVE_LINK_PATTERN);
+  if (nativeLinkMatch && VALID_HTTP_URL_PATTERN.test(nativeLinkMatch[1])) {
+    return nativeLinkMatch[1];
+  }
+
+  if (VALID_HTTP_URL_PATTERN.test(trimmed)) {
+    return trimmed;
+  }
+
+  return null;
+}
+
 export function parseSlackButtons(rawText: string): ParsedSlackMessage {
   // Fresh RegExp instance per call — a shared module-level global regex would
   // carry mutable lastIndex state across concurrent/successive calls.
-  const regex = new RegExp(SLACK_BTN_PATTERN, "g");
+  const regex = new RegExp(SLACK_BTN_PATTERN, "gs");
 
   const blocks: any[] = [];
   const labels: string[] = [];
@@ -37,21 +65,29 @@ export function parseSlackButtons(rawText: string): ParsedSlackMessage {
     pushTextBlock(rawText.slice(lastIndex, match.index));
 
     const label = match[1].trim();
-    const url = match[2].trim();
-    labels.push(label);
-    buttonCount += 1;
+    const url = extractValidUrl(match[2]);
 
-    blocks.push({
-      type: "actions",
-      elements: [
-        {
-          type: "button",
-          text: { type: "plain_text", text: label, emoji: true },
-          url,
-          action_id: `slack_btn_${buttonCount}`,
-        },
-      ],
-    });
+    if (url) {
+      labels.push(label);
+      buttonCount += 1;
+      blocks.push({
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: { type: "plain_text", text: label, emoji: true },
+            url,
+            action_id: `slack_btn_${buttonCount}`,
+          },
+        ],
+      });
+    } else {
+      // No usable URL for this item — render as plain text instead of a
+      // broken button, so this one item doesn't take down the whole message
+      // (Slack's chat.postMessage rejects the ENTIRE message with
+      // invalid_blocks if any button url isn't valid).
+      pushTextBlock(`${label} (link unavailable)`);
+    }
 
     lastIndex = regex.lastIndex;
   }
@@ -59,8 +95,12 @@ export function parseSlackButtons(rawText: string): ParsedSlackMessage {
   // Any trailing text after the last button (e.g. "Total ... found: 5")
   pushTextBlock(rawText.slice(lastIndex));
 
-  if (buttonCount === 0) {
+  if (blocks.length === 0) {
     return { text: rawText };
+  }
+
+  if (buttonCount === 0) {
+    return { text: rawText, blocks };
   }
 
   return {
