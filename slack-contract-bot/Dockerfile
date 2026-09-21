@@ -10,7 +10,11 @@ FROM node:20-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 
-CMD ["node", "dist/app.js"]
+# Don't run as root; the node image ships an unprivileged "node" user.
+USER node
+
+# --enable-source-maps: stack traces in CloudWatch point at src/*.ts lines.
+CMD ["node", "--enable-source-maps", "dist/app.js"]

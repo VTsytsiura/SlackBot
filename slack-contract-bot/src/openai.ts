@@ -1,3 +1,5 @@
+import { log } from "./logger";
+
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const TIMEOUT_MS = 1500; 
@@ -36,6 +38,7 @@ export async function generateWorkingMessage(userText: string): Promise<string |
     clearTimeout(timeout);
 
     if (!response.ok) {
+      log.warn("OpenAI working-message request failed", { status: response.status });
       return null;
     }
 
@@ -44,6 +47,8 @@ export async function generateWorkingMessage(userText: string): Promise<string |
     return text || null;
   } catch (err) {
     clearTimeout(timeout);
+    // Expected on timeout (TIMEOUT_MS) — the static placeholder stays, so debug only.
+    log.debug("OpenAI working-message request errored", { err });
     return null;
   }
 }

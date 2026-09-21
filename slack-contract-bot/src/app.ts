@@ -5,6 +5,23 @@ import { downloadSalesforceFile } from "./salesforce";
 import { startHealthCheckServer } from "./health";
 import { generateWorkingMessage } from "./openai";
 import { parseSlackButtons } from "./slackFormatting";
+import { log } from "./logger";
+
+// Fail fast with a readable message instead of an opaque Slack/Salesforce
+// auth error on the first request.
+const REQUIRED_ENV = [
+  "SLACK_BOT_TOKEN",
+  "SLACK_APP_TOKEN",
+  "SF_AGENT_CLIENT_ID",
+  "SF_AGENT_CLIENT_SECRET",
+  "SF_AGENT_ID",
+];
+
+const missingEnv = REQUIRED_ENV.filter((name) => !process.env[name]);
+if (missingEnv.length > 0) {
+  log.error("Missing required environment variables", { missing: missingEnv });
+  process.exit(1);
+}
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -33,10 +50,12 @@ app.message(async ({ message, say }) => {
     if (state?.sessionId) {
       try {
         await endAgentSession(state.sessionId);
-      } catch {
+      } catch (err) {
+        log.warn("Failed to end agent session on reset", { channelId, sessionId: state.sessionId, err });
       }
     }
     sessions.delete(channelId);
+    log.info("Conversation reset", { channelId });
     await say("Ok, I reset the agent conversation.");
     return;
   }
@@ -50,7 +69,9 @@ app.message(async ({ message, say }) => {
   if (!state.sessionId) {
     try {
       state.sessionId = await createAgentSession();
+      log.info("Agent session created", { channelId, sessionId: state.sessionId });
     } catch (err) {
+      log.error("Failed to create agent session", { channelId, err });
       await say(`❌ Failed to create an agent session: ${(err as Error).message}`);
       return;
     }
@@ -66,11 +87,13 @@ app.message(async ({ message, say }) => {
       if (smartText && placeholderTs) {
         try {
           await app.client.chat.update({ channel: channelId, ts: placeholderTs, text: `_${smartText}_` });
-        } catch {
+        } catch (err) {
+          log.warn("Failed to update working placeholder", { channelId, err });
         }
       }
     })
-    .catch(() => {
+    .catch((err) => {
+      log.warn("Working message generation failed", { channelId, err });
     });
 
   try {
@@ -92,7 +115,9 @@ app.message(async ({ message, say }) => {
             filename: fileName,
             initial_comment: cleanedText || `Here is the generated file: ${fileName}`,
           });
+          log.info("Uploaded generated file", { channelId, contentDocumentId });
         } catch (fileErr) {
+          log.error("Failed to attach generated file", { channelId, contentDocumentId, err: fileErr });
           await say(replyText);
           await say(`⚠️ Could not attach the file directly: ${(fileErr as Error).message}`);
         }
@@ -106,12 +131,42 @@ app.message(async ({ message, say }) => {
       }
     }
   } catch (err) {
+    log.error("Agent communication failed", { channelId, sessionId: state.sessionId, err });
     await say(`❌ Agent communication error: ${(err as Error).message}`);
   }
+});
+
+async function shutdown(signal: string): Promise<void> {
+  log.info("Shutting down", { signal });
+  try {
+    await app.stop();
+    process.exit(0);
+  } catch (err) {
+    log.error("Error during shutdown", { err });
+    process.exit(1);
+  }
+}
+
+// ECS sends SIGTERM on deploys/scale-in and SIGKILLs after stopTimeout.
+process.once("SIGTERM", () => void shutdown("SIGTERM"));
+process.once("SIGINT", () => void shutdown("SIGINT"));
+
+// Same outcome as Node's default for these, but logged as structured JSON;
+// the non-zero exit lets ECS restart the task.
+process.on("unhandledRejection", (reason) => {
+  log.error("Unhandled promise rejection", { err: reason });
+  process.exit(1);
+});
+process.on("uncaughtException", (err) => {
+  log.error("Uncaught exception", { err });
+  process.exit(1);
 });
 
 (async () => {
   startHealthCheckServer();
   await app.start();
-  console.log("⚡️ Slack bot is running (Socket Mode)");
-})();
+  log.info("Slack bot is running", { mode: "socket" });
+})().catch((err) => {
+  log.error("Failed to start Slack bot", { err });
+  process.exit(1);
+});

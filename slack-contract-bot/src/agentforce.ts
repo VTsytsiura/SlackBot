@@ -1,3 +1,5 @@
+import { log } from "./logger";
+
 const SF_LOGIN_URL = process.env.SF_AGENT_LOGIN_URL || "https://login.salesforce.com";
 const AGENT_API_BASE = "https://api.salesforce.com/einstein/ai-agent/v1";
 
@@ -104,11 +106,19 @@ export async function sendMessageToAgent(
   await assertOk(response, "Send message");
 
   const data = (await response.json()) as AgentSendMessageResponse;
-  console.log("RAW Agent API response:", JSON.stringify(data, null, 2));
+  const messageTypes = (data.messages || []).map((m) => m.type);
+
+  // The raw body can contain contract/customer data, so it is only emitted
+  // when LOG_LEVEL=debug.
+  log.debug("Agent API raw response", { sessionId, sequenceId, data });
 
   const textMessages = (data.messages || [])
     .filter((m) => (m.type === "Inform" || m.type === "Text") && !!m.message)
     .map((m) => m.message as string);
+
+  if (textMessages.length === 0) {
+    log.warn("Agent API returned no text messages", { sessionId, sequenceId, messageTypes });
+  }
 
   return textMessages.length > 0 ? textMessages : [JSON.stringify(data)];
 }
