@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { App } from "@slack/bolt";
 import { createAgentSession, sendMessageToAgent, endAgentSession } from "./agentforce";
-import { downloadSalesforceFile } from "./salesforce";
+import { downloadSalesforceFile, findSalesforceUserIdBySlackId } from "./salesforce";
 import { startHealthCheckServer } from "./health";
 import { generateWorkingMessage } from "./openai";
 import { parseSlackButtons } from "./slackFormatting";
@@ -44,9 +44,14 @@ app.message(async ({ message, say }) => {
 
   const channelId = (message as any).channel as string;
   const text = (message as any).text as string;
+  const slackUserId = (message as any).user as string | undefined;
+  if (!slackUserId) return; // bot/system messages without an author
 
-  if (text === "/reset") {
-    const state = sessions.get(channelId);
+  // A session bakes in one person's Salesforce Id, so key by channel + user.
+  const sessionKey = `${channelId}:${slackUserId}`;
+
+  if (text?.trim() === "/reset") {
+    const state = sessions.get(sessionKey);
     if (state?.sessionId) {
       try {
         await endAgentSession(state.sessionId);
@@ -54,21 +59,30 @@ app.message(async ({ message, say }) => {
         log.warn("Failed to end agent session on reset", { channelId, sessionId: state.sessionId, err });
       }
     }
-    sessions.delete(channelId);
+    sessions.delete(sessionKey);
     log.info("Conversation reset", { channelId });
     await say("Ok, I reset the agent conversation.");
     return;
   }
 
-  let state = sessions.get(channelId);
+  let state = sessions.get(sessionKey);
   if (!state) {
     state = { seq: 0 };
-    sessions.set(channelId, state);
+    sessions.set(sessionKey, state);
   }
 
   if (!state.sessionId) {
     try {
-      state.sessionId = await createAgentSession();
+      const salesforceUserId = await findSalesforceUserIdBySlackId(slackUserId);
+      if (!salesforceUserId) {
+        sessions.delete(sessionKey);
+        log.warn("No Salesforce user linked to Slack user", { channelId, slackUserId });
+        await say("Your Slack account isn't linked to a Salesforce user yet. Please contact your administrator.");
+        return;
+      }
+      state.sessionId = await createAgentSession([
+        { name: "sfUserId", type: "Text", value: salesforceUserId },
+      ]);
       log.info("Agent session created", { channelId, sessionId: state.sessionId });
     } catch (err) {
       log.error("Failed to create agent session", { channelId, err });

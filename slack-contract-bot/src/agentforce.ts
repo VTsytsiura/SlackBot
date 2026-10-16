@@ -55,7 +55,13 @@ async function getAgentApiToken(): Promise<string> {
   return data.access_token;
 }
 
-export async function createAgentSession(): Promise<string> {
+export interface AgentVariable {
+  name: string;
+  type: string;
+  value: string;
+}
+
+export async function createAgentSession(variables: AgentVariable[] = []): Promise<string> {
   const token = await getAgentApiToken();
   const agentId = process.env.SF_AGENT_ID || "";
 
@@ -70,6 +76,7 @@ export async function createAgentSession(): Promise<string> {
       instanceConfig: { endpoint: SF_LOGIN_URL },
       streamingCapabilities: { chunkTypes: ["Text"] },
       bypassUser: false,
+      ...(variables.length > 0 ? { variables } : {}),
     }),
   });
 

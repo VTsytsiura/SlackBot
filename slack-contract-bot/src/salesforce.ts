@@ -1,3 +1,5 @@
+import { log } from "./logger";
+
 const SF_AGENT_CLIENT_ID = process.env.SF_AGENT_CLIENT_ID || "";
 const SF_AGENT_CLIENT_SECRET = process.env.SF_AGENT_CLIENT_SECRET || "";
 const SF_LOGIN_URL = process.env.SF_AGENT_LOGIN_URL || "https://login.salesforce.com";
@@ -85,4 +87,43 @@ export async function downloadSalesforceFile(contentDocumentId: string): Promise
   const contentType = extension.toLowerCase() === "pdf" ? "application/pdf" : "application/octet-stream";
 
   return { data, fileName, contentType };
+}
+// ---- Slack user -> Salesforce user mapping (User.Slack_User_Id__c) ----
+
+const USER_CACHE_TTL_MS = 10 * 60 * 1000;
+const userIdCache = new Map<string, { sfUserId: string; expiresAt: number }>();
+
+// Returns the Salesforce User Id for a Slack user id, or null if there is no
+// match (or more than one — ambiguous). Only successful lookups are cached,
+// so linking a user in Salesforce takes effect immediately.
+export async function findSalesforceUserIdBySlackId(slackUserId: string): Promise<string | null> {
+  if (!/^[A-Za-z0-9]+$/.test(slackUserId)) {
+    log.warn("Rejected malformed Slack user id", { slackUserId });
+    return null;
+  }
+
+  const cached = userIdCache.get(slackUserId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.sfUserId;
+  }
+
+  const { accessToken, instanceUrl } = await getAccessToken();
+  const soql = `SELECT Id FROM User WHERE Slack_User_Id__c = '${slackUserId}' AND IsActive = true LIMIT 2`;
+  const response = await fetch(
+    `${instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  await assertOk(response, "User lookup");
+
+  const data = (await response.json()) as { records?: Array<{ Id: string }> };
+  const records = data.records || [];
+
+  if (records.length === 0) return null;
+  if (records.length > 1) {
+    log.warn("Multiple Salesforce users share one Slack_User_Id__c", { slackUserId });
+    return null;
+  }
+
+  userIdCache.set(slackUserId, { sfUserId: records[0].Id, expiresAt: Date.now() + USER_CACHE_TTL_MS });
+  return records[0].Id;
 }
