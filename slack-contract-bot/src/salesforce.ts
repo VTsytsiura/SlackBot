@@ -52,6 +52,55 @@ async function getAccessToken(): Promise<{ accessToken: string; instanceUrl: str
   return { accessToken: data.access_token, instanceUrl: data.instance_url };
 }
 
+// Restores the original letter case of an 18-char Salesforce Id whose case was lost
+// (e.g. lowercased by the LLM/Slack). The 3-char suffix encodes the case of the first 15 chars.
+// Returns the input unchanged if it is not an 18-char Id or the suffix does not validate.
+export function restoreSalesforceIdCase(id: string): string {
+  if (!/^[A-Za-z0-9]{18}$/.test(id)) return id;
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345";
+  const base = id.slice(0, 15).toLowerCase();
+  const suffix = id.slice(15).toUpperCase();
+  let restored = "";
+  for (let chunk = 0; chunk < 3; chunk++) {
+    const bits = alphabet.indexOf(suffix[chunk]);
+    if (bits < 0) return id;
+    for (let i = 0; i < 5; i++) {
+      const ch = base[chunk * 5 + i];
+      restored += bits & (1 << i) ? ch.toUpperCase() : ch;
+    }
+  }
+  // Verify: re-encode the restored Id and compare with the suffix
+  let check = "";
+  for (let chunk = 0; chunk < 3; chunk++) {
+    let bits = 0;
+    for (let i = 0; i < 5; i++) {
+      const ch = restored[chunk * 5 + i];
+      if (ch >= "A" && ch <= "Z") bits |= 1 << i;
+    }
+    check += alphabet[bits];
+  }
+  return check === suffix ? restored + suffix : id;
+}
+
+// Accepts a ContentDocument Id (069...) or a ContentVersion Id (068...) and
+// returns the ContentDocument Id, or null if it cannot be resolved.
+export async function resolveContentDocumentId(rawId: string): Promise<string | null> {
+  if (!/^[A-Za-z0-9]{15,18}$/.test(rawId)) return null;
+  const id = restoreSalesforceIdCase(rawId);
+  if (id.startsWith("069")) return id;
+  if (!id.startsWith("068")) return null;
+
+  const { accessToken, instanceUrl } = await getAccessToken();
+  const soql = `SELECT ContentDocumentId FROM ContentVersion WHERE Id = '${id}' LIMIT 1`;
+  const response = await fetch(
+    `${instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  await assertOk(response, "ContentVersion lookup");
+  const data = await response.json();
+  return data.records?.[0]?.ContentDocumentId ?? null;
+}
+
 export async function downloadSalesforceFile(contentDocumentId: string): Promise<SalesforceFile> {
   const { accessToken, instanceUrl } = await getAccessToken();
 

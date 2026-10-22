@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { App } from "@slack/bolt";
 import { createAgentSession, sendMessageToAgent, endAgentSession } from "./agentforce";
-import { downloadSalesforceFile, findSalesforceUserIdBySlackId } from "./salesforce";
+import { downloadSalesforceFile, findSalesforceUserIdBySlackId, resolveContentDocumentId } from "./salesforce";
 import { startHealthCheckServer } from "./health";
 import { generateWorkingMessage } from "./openai";
 import { parseSlackButtons } from "./slackFormatting";
@@ -36,6 +36,10 @@ interface ConversationState {
 }
 
 const sessions = new Map<string, ConversationState>();
+
+// Salesforce Id (ContentDocument 069... or ContentVersion 068...) inside a "View Document" button URL.
+const VIEW_DOCUMENT_BTN_REGEX = /\[\[SLACK_BTN\|View Document\|([^\]]+?)\]\]/;
+const SF_FILE_ID_REGEX = /(06[89][A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?)/i;
 
 const FILE_LINK_REGEX = /\/document\/download\/([a-zA-Z0-9]{15,18})/;
 
@@ -141,6 +145,34 @@ app.message(async ({ message, say }) => {
           await say({ text: parsed.text, blocks: parsed.blocks });
         } else {
           await say(parsed.text);
+        }
+
+        // Post an inline preview of the generated document right after the button message.
+        const viewBtn = replyText.match(VIEW_DOCUMENT_BTN_REGEX);
+        if (viewBtn) {
+          const idMatch = viewBtn[1].match(SF_FILE_ID_REGEX);
+          let previewPosted = false;
+          if (idMatch) {
+            try {
+              const contentDocumentId = await resolveContentDocumentId(idMatch[1]);
+              if (contentDocumentId) {
+                const { data, fileName } = await downloadSalesforceFile(contentDocumentId);
+                await app.client.files.uploadV2({
+                  channel_id: channelId,
+                  file: data,
+                  filename: fileName,
+                });
+                previewPosted = true;
+                log.info("Uploaded document preview", { channelId, contentDocumentId });
+              }
+            } catch (previewErr) {
+              log.warn("Could not upload document preview", { channelId, err: previewErr });
+            }
+          }
+          if (!previewPosted) {
+            // The agent answer and the View Document button are already shown; just tell the user.
+            await say("_Preview is not available for this document._");
+          }
         }
       }
     }
